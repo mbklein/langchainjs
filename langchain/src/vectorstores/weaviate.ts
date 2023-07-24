@@ -1,5 +1,6 @@
 import * as uuid from "uuid";
 import type {
+  GraphQLGetter,
   WeaviateObject,
   WeaviateClient,
   WhereFilter,
@@ -59,10 +60,10 @@ export interface WeaviateLibArgs {
   metadataKeys?: string[];
 }
 
-interface ResultRow {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  [key: string]: any;
-}
+// interface ResultRow {
+//   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+//   [key: string]: any;
+// }
 
 export interface WeaviateFilter {
   distance?: number;
@@ -166,8 +167,8 @@ export class WeaviateStore extends VectorStore {
     }
   }
 
-  async similaritySearchVectorWithScore(
-    query: number[],
+  async _nearSimilaritySearchWithScore(
+    addNearMedia: (builder: GraphQLGetter) => GraphQLGetter,
     k: number,
     filter?: WeaviateFilter
   ): Promise<[Document, number][]> {
@@ -175,12 +176,9 @@ export class WeaviateStore extends VectorStore {
       let builder = await this.client.graphql
         .get()
         .withClassName(this.indexName)
-        .withFields(`${this.queryAttrs.join(" ")} _additional { distance }`)
-        .withNearVector({
-          vector: query,
-          distance: filter?.distance,
-        })
-        .withLimit(k);
+        .withFields(`${this.queryAttrs.join(" ")} _additional { distance }`);
+
+      builder = addNearMedia(builder).withLimit(k);
 
       if (filter?.where) {
         builder = builder.withWhere(filter.where);
@@ -190,7 +188,7 @@ export class WeaviateStore extends VectorStore {
 
       const documents: [Document, number][] = [];
       for (const data of result.data.Get[this.indexName]) {
-        const { [this.textKey]: text, _additional, ...rest }: ResultRow = data;
+        const { [this.textKey]: text, _additional, ...rest } = data;
 
         documents.push([
           new Document({
@@ -204,6 +202,47 @@ export class WeaviateStore extends VectorStore {
     } catch (e) {
       throw Error(`'Error in similaritySearch' ${e}`);
     }
+  }
+
+  async similaritySearch(
+    query: string,
+    k: number,
+    filter?: WeaviateFilter
+  ): Promise<Document[]> {
+    const results = await this.similaritySearchWithScore(query, k, filter);
+    return results.map((result) => result[0]);
+  }
+
+  async similaritySearchWithScore(
+    query: string,
+    k: number,
+    filter?: WeaviateFilter
+  ): Promise<[Document, number][]> {
+    if (this.embeddings) {
+      return super.similaritySearchWithScore(query, k, filter);
+    }
+
+    return this._nearSimilaritySearchWithScore(
+      (builder: GraphQLGetter) => builder.withNearText({ concepts: [query] }),
+      k,
+      filter
+    );
+  }
+
+  async similaritySearchVectorWithScore(
+    query: number[],
+    k: number,
+    filter?: WeaviateFilter
+  ): Promise<[Document, number][]> {
+    return this._nearSimilaritySearchWithScore(
+      (builder: GraphQLGetter) =>
+        builder.withNearVector({
+          vector: query,
+          distance: filter?.distance,
+        }),
+      k,
+      filter
+    );
   }
 
   static fromTexts(
